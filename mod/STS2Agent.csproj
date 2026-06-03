@@ -1,0 +1,47 @@
+<Project Sdk="Godot.NET.Sdk/4.5.1">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>true</ImplicitUsings>
+    <LangVersion>13.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- ============================================ -->
+    <!--          ★ 改成你的 STS2 安装目录 ★           -->
+    <!-- ============================================ -->
+    <Sts2Dir>D:\Steam\steamapps\common\Slay the Spire 2</Sts2Dir>
+    <Sts2DataDir>$(Sts2Dir)\data_sts2_windows_x86_64</Sts2DataDir>
+    
+    <!-- RitsuLib DLL 路径（从 Steam Workshop 或手动安装） -->
+    <RitsuLibDir>$(Sts2Dir)\mods\STS2-RitsuLib</RitsuLibDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 游戏本体 -->
+    <Reference Include="sts2">
+      <HintPath>$(Sts2DataDir)\sts2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Harmony（代码补丁框架） -->
+    <Reference Include="0Harmony">
+      <HintPath>$(Sts2DataDir)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- RitsuLib（mod 基础库，提供事件系统+遥测） -->
+    <Reference Include="STS2-RitsuLib">
+      <HintPath>$(RitsuLibDir)\STS2-RitsuLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 构建后自动复制到游戏 mods 目录 -->
+  <Target Name="Copy Mod" AfterTargets="PostBuildEvent">
+    <Message Text="Copying STS2Agent mod files..." Importance="high" />
+    <MakeDir Directories="$(Sts2Dir)\mods\STS2Agent\" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(Sts2Dir)\mods\STS2Agent\" />
+    <Copy SourceFiles="STS2Agent.json" DestinationFolder="$(Sts2Dir)\mods\STS2Agent\" />
+    <Message Text="Done! Restart STS2 to load." Importance="high" />
+  </Target>
+</Project>

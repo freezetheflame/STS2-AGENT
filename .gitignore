@@ -1,0 +1,22 @@
+# STS2 编译产物
+mod/bin/
+mod/obj/
+mod/.godot/
+
+# Python
+server/__pycache__/
+server/.venv/
+*.pyc
+
+# 日志（游戏数据，不要提交）
+logs/
+
+# IDE
+.idea/
+.vs/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
