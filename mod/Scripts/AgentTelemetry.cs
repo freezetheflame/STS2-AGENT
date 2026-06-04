@@ -56,7 +56,7 @@ public static class AgentTelemetry
 
     private static void OnRunStarted(RunStartedEvent evt)
     {
-        _characterId = evt.RunState.Character?.ModelName ?? "unknown";
+        _characterId = evt.RunState.CharacterId?.ToString() ?? "unknown";
         _ascension = evt.RunState.AscensionLevel;
 
         PostEvent("run_started", new Dictionary<string, object?>
@@ -97,9 +97,11 @@ public static class AgentTelemetry
 
     private static void OnCombatEnded(CombatEndedEvent evt)
     {
+        // CombatEndedEvent 触发时无法直接区分胜利/失败，
+        // CombatVictoryEvent 是独立事件，已由 OnCombatVictory 处理
         PostEvent("combat_ended", new Dictionary<string, object?>
         {
-            ["is_victory"] = evt is CombatVictoryEvent,
+            ["is_victory"] = false,  // 胜利时 CombatVictoryEvent 先于 CombatEndedEvent 触发
         });
     }
 
