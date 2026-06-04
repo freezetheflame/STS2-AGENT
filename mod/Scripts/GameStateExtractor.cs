@@ -228,7 +228,7 @@ public static class GameStateExtractor
             {
                 var val = GetPropValue(pile, propName);
                 if (val is System.Collections.IEnumerable en)
-                    return en.Cast<object>().ToList();
+                    return en.Cast<object?>().ToList();
             }
         }
         catch { }
