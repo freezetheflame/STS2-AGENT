@@ -9,11 +9,11 @@
     <!-- ============================================ -->
     <!--          ★ 改成你的 STS2 安装目录 ★           -->
     <!-- ============================================ -->
-    <Sts2Dir>D:\Steam\steamapps\common\Slay the Spire 2</Sts2Dir>
+    <Sts2Dir>D:\SteamLibrary\steamapps\common\Slay the Spire 2</Sts2Dir>
     <Sts2DataDir>$(Sts2Dir)\data_sts2_windows_x86_64</Sts2DataDir>
     
     <!-- RitsuLib DLL 路径（从 Steam Workshop 或手动安装） -->
-    <RitsuLibDir>$(Sts2Dir)\mods\STS2-RitsuLib</RitsuLibDir>
+    <RitsuLibDir>$(Sts2Dir)\mods\STS2-RitsuLib\lib\0.106.1</RitsuLibDir>
   </PropertyGroup>
 
   <ItemGroup>
