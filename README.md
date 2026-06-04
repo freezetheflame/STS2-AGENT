@@ -12,10 +12,12 @@ STS2-AGENT/
 │   └── Scripts/
 │       ├── Entry.cs           # Mod 入口
 │       ├── AgentTelemetry.cs  # 事件监听 + HTTP 发送
-│       └── GameStateExtractor.cs  # 游戏状态提取
+│       └── GameStateExtractor.cs  # 游戏状态提取（反射）
 ├── server/                    # Python 桥接服务器
 │   ├── main.py                # FastAPI 服务器
 │   └── requirements.txt
+├── docs/
+│   └── DEBUG.md               # 调试日志 & 踩坑记录
 └── logs/                      # 运行时日志（不提交）
 ```
 
@@ -26,71 +28,75 @@ STS2 游戏 + Mod  →  POST /event →  Python 服务器  →  终端实时输�
                   (游戏状态JSON)   (localhost:8765)    (后续接入 LLM)
 ```
 
+## 当前状态
+
+| 阶段 | 状态 |
+|------|------|
+| Phase 1: 数据导出 | 🚧 调试中 — 事件流已通，部分字段待修复 |
+| Phase 2: LLM 集成 | ⏳ 未开始 |
+| Phase 3: 游戏内反馈 | ⏳ 未开始 |
+
+详见 [`docs/DEBUG.md`](docs/DEBUG.md)
+
 ## Windows 端环境搭建
 
 ### 1. 安装工具
 
-- **[Godot 4.5.1 Mono (.NET版)](https://godotengine.org/download/)** — 必须 .NET 版！
+- **[Godot 4.x .NET 版](https://godotengine.org/download/windows/)** — 点第二个按钮 "Godot Engine – .NET"（标注 C# support）。**不要从 Steam/Epic 下载**（无 C#）。
 - **[.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)**
-- **[Rider](https://www.jetbrains.com/rider/)** （强烈推荐）或 VS Code + C# Dev Kit
-- **[STS2-RitsuLib](https://github.com/BAKAOLC/STS2-RitsuLib)** — 下载 Release 的 DLL 放到 `Slay the Spire 2/mods/STS2-RitsuLib/` 目录
+- Rider（推荐）或 VS Code + C# Dev Kit
 
-### 2. 克隆项目
+### 2. 安装 RitsuLib（⚠️ 重要）
+
+RitsuLib 发布包采用 Loader + 变体架构。**不要只下载单个 DLL！**
+
+去 https://github.com/BAKAOLC/STS2-RitsuLib/releases 下载 **`STS2-RitsuLib.<version>.variant-pack.zip`**，解压到 `Slay the Spire 2/mods/STS2-RitsuLib/`，得到：
+
+```
+mods/STS2-RitsuLib/
+├── STS2-RitsuLib.dll          ← Loader（~24KB，不含API）
+├── ritsulib-variants.json
+└── lib/
+    └── 0.106.1/
+        └── STS2-RitsuLib.dll  ← 真正的 API DLL（~2MB）
+```
+
+### 3. 克隆项目 & 修改路径
 
 ```bash
 git clone https://github.com/freezetheflame/STS2-AGENT.git
 ```
 
-### 3. 修改 .csproj 路径
-
-打开 `mod/STS2Agent.csproj`，把 `<Sts2Dir>` 改成你的 STS2 安装路径：
-
+打开 `mod/STS2Agent.csproj`，检查：
 ```xml
-<Sts2Dir>D:\Steam\steamapps\common\Slay the Spire 2</Sts2Dir>
+<Sts2Dir>D:\SteamLibrary\steamapps\common\Slay the Spire 2</Sts2Dir>
 ```
+（如果你的 Steam 库在其他盘，先查 `C:\Program Files (x86)\Steam\steamapps\libraryfolders.vdf`）
 
-### 4. 构建 Mod
+### 4. 构建 & 运行
 
-```bash
+```powershell
 cd mod
 dotnet build
 ```
 
-构建成功后，DLL 和 JSON 会自动复制到 STS2 的 `mods/STS2Agent/` 目录。
-
-### 5. 启动桥接服务器
-
+启动桥接服务器（WSL 或 Windows 均可）：
 ```bash
 cd server
 pip install -r requirements.txt
 python main.py
 ```
 
-### 6. 启动游戏测试
+启动 STS2 → 启用模组 → 重启游戏 → 进战斗 → 观察服务器终端。
 
-1. 启动 STS2，确认右下角显示"已加载模组"
-2. 开一局游戏，进入战斗
-3. 观察服务器终端是否打印游戏状态
+## 调试
 
-## 开发迭代
-
-每次改代码后：
-
-```bash
-# Windows 上
-cd mod && dotnet build
-
-# WSL 上（服务器）
-cd server && python main.py
+游戏日志位置：
+```
+C:\Users\<user>\AppData\Roaming\SlayTheSpire2\logs\godot.log
 ```
 
-游戏不需要重启 — 下次进入战斗就会加载新代码。
-
-## 当前阶段
-
-Phase 1: 数据导出 ✅ — Mod 提取战斗状态并发送到 Python 服务器
-Phase 2: LLM 集成 🚧 — 将状态发给 GPT/Claude 做策略分析
-Phase 3: 游戏内反馈 🚧 — 通过通知/按钮在游戏中显示 AI 建议
+搜索 `[DUMP]` 查看运行时类型诊断输出。
 
 ## 许可
 
