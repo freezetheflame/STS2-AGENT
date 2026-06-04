@@ -15,28 +15,87 @@ public static class GameStateExtractor
     // 记录已诊断过的类型，避免重复刷日志
     private static readonly ConcurrentDictionary<string, bool> Diagnosed = new();
 
+    // 记录是否已经 dump 过类型属性（一次性诊断）
+    private static bool _typeDumpDone = false;
+
+    /// <summary>
+    /// 尝试多个属性名获取值（用于反射探测不稳定的属性名）。
+    /// 返回第一个匹配的值，全部未命中则返回 null。
+    /// </summary>
+    private static object? TryGetPropValue(object? obj, params string[] propNames)
+    {
+        if (obj == null) return null;
+        foreach (var name in propNames)
+        {
+            var val = GetPropValue(obj, name);
+            if (val != null) return val;
+        }
+        return null;
+    }
+
     public static Dictionary<string, object?> ExtractCombatState(ICombatState combat)
     {
         var result = new Dictionary<string, object?>();
+        var diags = new List<Dictionary<string, object?>>();
 
         try
         {
-            result["player"] = ExtractPlayerState(combat);
+            // 记录 combat 的实际类型（关键诊断信息！）
+            result["_combat_type"] = combat.GetType().FullName;
+
+            // ★ dump：输出 CombatState/Creature/Player 的所有属性名
+            result["_type_dump"] = DumpTypeProperties(combat);
+
+            result["player"] = ExtractPlayerState(combat, diags);
             result["enemies"] = ExtractEnemiesState(combat);
-            result["turn"] = GetPropValue(combat, "TurnNumber") ?? 0;
-            result["floor"] = GetPropValue(combat, "FloorNum");
+            result["turn"] = GetPropValue(combat, "RoundNumber") ?? 0;
+            // floor: 先试 CombatState.RunState，再试 Player.RunState
+            var runState = GetPropValue(combat, "RunState");
+            result["floor"] = TryGetPropValue(runState, "FloorNum", "Floor", "CurrentFloor", "FloorNumber",
+                "ActFloor", "CurrentActFloor", "Stage", "CurrentStage");
+            if (result["floor"] == null)
+            {
+                // 从 Player.RunState 尝试
+                var pcList = GetPropValue(combat, "PlayerCreatures") as IEnumerable;
+                if (pcList != null)
+                {
+                    foreach (var pc in pcList)
+                    {
+                        if (pc != null && (bool?)GetPropValue(pc, "IsEnemy") == false)
+                        {
+                            var pl = GetPropValue(pc, "Player");
+                            var prs = GetPropValue(pl, "RunState");
+                            result["floor"] = TryGetPropValue(prs, "FloorNum", "Floor", "CurrentFloor", "FloorNumber",
+                                "ActFloor", "CurrentActFloor", "Stage", "CurrentStage");
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // character: 从 Player.Character 获取
+            {
+                var playerState = result["player"] as Dictionary<string, object?>;
+                if (playerState != null && playerState.TryGetValue("_character_name", out var cn) && cn is string s && s != "unknown")
+                {
+                    result["character"] = s;
+                }
+            }
         }
         catch (Exception ex)
         {
             Entry.Logger.Warn($"State extraction partial failure: {ex.Message}");
         }
 
+        if (diags.Count > 0)
+            result["_diag"] = diags;
+
         return result;
     }
 
     // ======== Player ========
 
-    private static Dictionary<string, object?> ExtractPlayerState(ICombatState combat)
+    private static Dictionary<string, object?> ExtractPlayerState(ICombatState combat, List<Dictionary<string, object?>> diags)
     {
         var state = new Dictionary<string, object?>();
 
@@ -64,19 +123,50 @@ public static class GameStateExtractor
         state["max_hp"] = GetPropValue(playerCreature, "MaxHp") ?? 0;
         state["block"] = GetPropValue(playerCreature, "Block") ?? 0;
 
-        // PlayerCombatState
-        object? pcs = null;
-        try { pcs = GetPropValue(playerCreature, "PlayerCombatState"); }
-        catch { }
+        // 记录 PlayerCreature 的实际类型（关键诊断信息！）
+        state["_creature_type"] = playerCreature.GetType().FullName;
 
-        if (pcs != null)
+        // ★ 从 Creature.Player.PlayerCombatState 获取手牌/能量/牌堆
+        var playerObj = GetPropValue(playerCreature, "Player");
+        if (playerObj != null)
         {
-            state["energy"] = GetPropValue(pcs, "Energy");
-            state["max_energy"] = GetPropValue(pcs, "MaxEnergy");
-            state["hand"] = ExtractCardsFromPile(GetCardsFromPile(pcs, "Hand"), pcs);
-            state["draw_pile_count"] = CardPileCount(GetPropValue(pcs, "DrawPile"));
-            state["discard_pile_count"] = CardPileCount(GetPropValue(pcs, "DiscardPile"));
-            state["exhaust_pile_count"] = CardPileCount(GetPropValue(pcs, "ExhaustPile"));
+            state["_player_type"] = playerObj.GetType().FullName;
+
+            // Character: 从 Player.Character 获取
+            var character = GetPropValue(playerObj, "Character");
+            if (character != null)
+            {
+                state["_character_type"] = character.GetType().FullName;
+                var charName = GetPropValue(character, "ModelId") ?? GetPropValue(character, "Name") ?? GetPropValue(character, "Id");
+                if (charName != null) state["_character_name"] = charName.ToString();
+            }
+
+            // MaxEnergy 在 Player 上
+            state["max_energy"] = GetPropValue(playerObj, "MaxEnergy");
+
+            // Energy/Hand/DrawPile/DiscardPile/ExhaustPile 在 PlayerCombatState 上
+            var pcs = GetPropValue(playerObj, "PlayerCombatState");
+            if (pcs != null)
+            {
+                state["_pcs_type"] = pcs.GetType().FullName;
+                state["energy"] = GetPropValue(pcs, "Energy") ?? GetPropValue(pcs, "CurrentEnergy");
+                state["hand"] = ExtractCardsFromPile(GetCardsFromPile(pcs, "Hand"), pcs);
+                state["draw_pile_count"] = CardPileCount(GetPropValue(pcs, "DrawPile"));
+                state["discard_pile_count"] = CardPileCount(GetPropValue(pcs, "DiscardPile"));
+                state["exhaust_pile_count"] = CardPileCount(GetPropValue(pcs, "ExhaustPile"));
+            }
+
+            // Deck 在 Player 上
+            state["draw_pile_count"] = (state["draw_pile_count"] is 0 or null)
+                ? CardPileCount(GetPropValue(playerObj, "Deck"))
+                : state["draw_pile_count"];
+        }
+
+        // fallback: 从 Creature 直接取
+        if (state["energy"] == null)
+        {
+            state["energy"] = GetPropValue(playerCreature, "Energy") ?? GetPropValue(playerCreature, "CurrentEnergy");
+            state["hand"] = ExtractCardsFromPile(GetCardsFromPile(playerCreature, "Hand"), playerCreature);
         }
 
         // 遗物
@@ -318,7 +408,7 @@ public static class GameStateExtractor
     private static void DiagnoseType(Type type, string missingProp)
     {
         var key = $"{type.FullName}:{missingProp}";
-        if (!Diagnosed.TryAdd(key, true)) return; // 已经输出过了
+        if (!Diagnosed.TryAdd(key, true)) return;
 
         var props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
             .Select(p => p.Name)
@@ -334,5 +424,73 @@ public static class GameStateExtractor
             $"[DIAG] Type={type.FullName} missing='{missingProp}' | " +
             $"Properties=[{string.Join(", ", props)}] | " +
             $"Fields=[{string.Join(", ", fields)}]");
+    }
+
+    /// <summary>
+    /// 一次性 dump：列出 CombatState 和 Creature 的所有属性名+类型。
+    /// 只跑一次，结果嵌入第一条 turn_decision。
+    /// </summary>
+    private static Dictionary<string, object?> DumpTypeProperties(object combat)
+    {
+        var dump = new Dictionary<string, object?>();
+        try
+        {
+            var ct = combat.GetType();
+            dump["combat_type"] = ct.FullName;
+            dump["combat_interfaces"] = ct.GetInterfaces().Select(i => i.FullName).OrderBy(n => n).ToList();
+            dump["combat_props"] = ct.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+                .Select(p => $"{p.Name} : {p.PropertyType.Name}").OrderBy(n => n).ToList();
+
+            // Creature 属性
+            try
+            {
+                var creatures = GetPropValue(combat, "PlayerCreatures") as IEnumerable;
+                if (creatures != null)
+                {
+                    foreach (var c in creatures)
+                    {
+                        if (c != null && (bool?)GetPropValue(c, "IsEnemy") == false)
+                        {
+                            var crt = c.GetType();
+                            dump["creature_type"] = crt.FullName;
+                            dump["creature_props"] = crt.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+                                .Select(p => $"{p.Name} : {p.PropertyType.Name}").OrderBy(n => n).ToList();
+
+                            // 也 dump Player 属性
+                            try
+                            {
+                                var player = GetPropValue(c, "Player");
+                                if (player != null)
+                                {
+                                    var pt = player.GetType();
+                                    dump["player_type"] = pt.FullName;
+                                    dump["player_props"] = pt.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+                                        .Select(p => $"{p.Name} : {p.PropertyType.Name}").OrderBy(n => n).ToList();
+
+                                    // 也 dump RunState 属性（用于定位 floor）
+                                    try
+                                    {
+                                        var rs = GetPropValue(combat, "RunState");
+                                        if (rs != null)
+                                        {
+                                            var rst = rs.GetType();
+                                            dump["runstate_type"] = rst.FullName;
+                                            dump["runstate_props"] = rst.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+                                                .Select(p => $"{p.Name} : {p.PropertyType.Name}").OrderBy(n => n).ToList();
+                                        }
+                                    }
+                                    catch { }
+                                }
+                            }
+                            catch { }
+                            break;
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+        catch { }
+        return dump;
     }
 }
