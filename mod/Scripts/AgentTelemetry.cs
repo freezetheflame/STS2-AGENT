@@ -56,7 +56,8 @@ public static class AgentTelemetry
 
     private static void OnRunStarted(RunStartedEvent evt)
     {
-        _characterId = evt.RunState.CharacterId?.ToString() ?? "unknown";
+        var rs = evt.RunState;
+        _characterId = GetPropStr(rs, "CharacterId") ?? "unknown";
         _ascension = evt.RunState.AscensionLevel;
 
         PostEvent("run_started", new Dictionary<string, object?>
@@ -65,8 +66,27 @@ public static class AgentTelemetry
             ["ascension"] = _ascension,
             ["is_daily"] = evt.IsDaily,
             ["is_multiplayer"] = evt.IsMultiplayer,
-            ["seed"] = evt.RunState.Seed,
+            ["seed"] = GetPropVal(rs, "Seed"),
         });
+    }
+
+    /// <summary>反射获取属性值，返回 object?</summary>
+    private static object? GetPropVal(object? obj, string name)
+    {
+        if (obj == null) return null;
+        try
+        {
+            var prop = obj.GetType().GetProperty(name,
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            return prop?.GetValue(obj);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>反射获取属性值，返回 string?</summary>
+    private static string? GetPropStr(object? obj, string name)
+    {
+        return GetPropVal(obj, name)?.ToString();
     }
 
     private static void OnRunEnded(RunEndedEvent evt)
