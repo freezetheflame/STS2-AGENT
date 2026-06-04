@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Reflection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -7,10 +8,13 @@ namespace STS2Agent.Scripts;
 
 /// <summary>
 /// 从 CombatState 提取完整的博弈状态。
-/// 全部使用反射访问属性，避免编译时类型层级不匹配。
+/// 全部使用反射访问属性，首次失败时打印类型的所有属性名（用于调试）。
 /// </summary>
 public static class GameStateExtractor
 {
+    // 记录已诊断过的类型，避免重复刷日志
+    private static readonly ConcurrentDictionary<string, bool> Diagnosed = new();
+
     public static Dictionary<string, object?> ExtractCombatState(ICombatState combat)
     {
         var result = new Dictionary<string, object?>();
@@ -36,11 +40,10 @@ public static class GameStateExtractor
     {
         var state = new Dictionary<string, object?>();
 
-        // 找到玩家
         object? playerCreature = null;
         try
         {
-            var all = GetPropValue(combat, "PlayerCreatures") as System.Collections.IEnumerable;
+            var all = GetPropValue(combat, "PlayerCreatures") as IEnumerable;
             if (all != null)
             {
                 foreach (var c in all)
@@ -57,22 +60,20 @@ public static class GameStateExtractor
 
         if (playerCreature == null) return state;
 
-        // 基础属性
         state["hp"] = GetPropValue(playerCreature, "CurrentHp") ?? 0;
         state["max_hp"] = GetPropValue(playerCreature, "MaxHp") ?? 0;
         state["block"] = GetPropValue(playerCreature, "Block") ?? 0;
 
-        // PlayerCombatState（战斗内数据）
+        // PlayerCombatState
         object? pcs = null;
         try { pcs = GetPropValue(playerCreature, "PlayerCombatState"); }
         catch { }
 
         if (pcs != null)
         {
-            state["energy"] = GetPropValue(pcs, "Energy") ?? 0;
-            state["max_energy"] = GetPropValue(pcs, "MaxEnergy") ?? 3;
-
-            state["hand"] = ExtractCardsFromPile(GetCardsFromPileObj(GetPropValue(pcs, "Hand")), pcs);
+            state["energy"] = GetPropValue(pcs, "Energy");
+            state["max_energy"] = GetPropValue(pcs, "MaxEnergy");
+            state["hand"] = ExtractCardsFromPile(GetCardsFromPile(pcs, "Hand"), pcs);
             state["draw_pile_count"] = CardPileCount(GetPropValue(pcs, "DrawPile"));
             state["discard_pile_count"] = CardPileCount(GetPropValue(pcs, "DiscardPile"));
             state["exhaust_pile_count"] = CardPileCount(GetPropValue(pcs, "ExhaustPile"));
@@ -81,7 +82,7 @@ public static class GameStateExtractor
         // 遗物
         try
         {
-            var relics = GetPropValue(playerCreature, "Relics") as System.Collections.IEnumerable;
+            var relics = GetPropValue(playerCreature, "Relics") as IEnumerable;
             if (relics != null)
                 state["relics"] = relics.Cast<object>().Select(GetModelName).ToList();
         }
@@ -90,18 +91,14 @@ public static class GameStateExtractor
         // 药水
         try
         {
-            var potions = GetPropValue(playerCreature, "Potions") as System.Collections.IEnumerable;
+            var potions = GetPropValue(playerCreature, "Potions") as IEnumerable;
             if (potions != null)
                 state["potions"] = potions.Cast<object>().Select(GetModelName).ToList();
         }
         catch { }
 
         // Buff
-        try
-        {
-            ExtractPowers(playerCreature, state);
-        }
-        catch { }
+        try { ExtractPowers(playerCreature, state); } catch { }
 
         return state;
     }
@@ -114,7 +111,7 @@ public static class GameStateExtractor
 
         try
         {
-            var enemyList = GetPropValue(combat, "Enemies") as System.Collections.IEnumerable;
+            var enemyList = GetPropValue(combat, "Enemies") as IEnumerable;
             if (enemyList == null) return enemies;
 
             foreach (var enemy in enemyList.Cast<object>())
@@ -130,8 +127,20 @@ public static class GameStateExtractor
                     ["block"] = GetPropValue(enemy, "Block") ?? 0,
                 };
 
-                try { ExtractPowers(enemy, es); } catch { }
+                // 敌人意图
+                var intentObj = GetPropValue(enemy, "Intent") ?? GetPropValue(enemy, "CurrentIntent") ?? GetPropValue(enemy, "Intents");
+                if (intentObj != null)
+                {
+                    es["intent"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = intentObj.GetType().Name,
+                        ["damage"] = GetPropValue(intentObj, "Damage"),
+                        ["hit_count"] = GetPropValue(intentObj, "HitCount"),
+                        ["description"] = GetPropValue(intentObj, "Description")?.ToString(),
+                    };
+                }
 
+                try { ExtractPowers(enemy, es); } catch { }
                 enemies.Add(es);
             }
         }
@@ -147,7 +156,7 @@ public static class GameStateExtractor
 
     private static void ExtractPowers(object creature, Dictionary<string, object?> target)
     {
-        var powers = GetPropValue(creature, "Powers") as System.Collections.IEnumerable;
+        var powers = GetPropValue(creature, "Powers") as IEnumerable;
         if (powers == null) return;
 
         var list = powers.Cast<object>()
@@ -178,7 +187,6 @@ public static class GameStateExtractor
                 ["upgraded"] = GetPropValue(card, "IsUpgraded") ?? GetPropValue(card, "Upgraded"),
             };
 
-            // playable
             if (pcs != null)
             {
                 try
@@ -201,16 +209,11 @@ public static class GameStateExtractor
                 catch { }
             }
 
-            // description
             try
             {
                 var desc = GetPropValue(card, "Description");
                 if (desc != null)
-                {
-                    var toString = desc.GetType().GetMethod("ToString", Type.EmptyTypes);
-                    if (toString != null)
-                        info["description"] = toString.Invoke(desc, null);
-                }
+                    info["description"] = desc.ToString();
             }
             catch { }
 
@@ -218,18 +221,24 @@ public static class GameStateExtractor
         }).ToList();
     }
 
-    private static List<object?>? GetCardsFromPileObj(object? pile)
+    /// <summary>从 PlayerCombatState 获取牌堆中的卡牌列表</summary>
+    private static List<object?>? GetCardsFromPile(object? pcs, string pilePropName)
     {
+        var pile = GetPropValue(pcs, pilePropName);
         if (pile == null) return null;
+
         try
         {
             // 尝试 Cards / AllCards 属性
-            foreach (var propName in new[] { "Cards", "AllCards" })
+            foreach (var cardsPropName in new[] { "Cards", "AllCards", "CardModels" })
             {
-                var val = GetPropValue(pile, propName);
-                if (val is System.Collections.IEnumerable en)
+                var val = GetPropValue(pile, cardsPropName);
+                if (val is IEnumerable en)
                     return en.Cast<object?>().ToList();
             }
+            // 也尝试直接当 IEnumerable 遍历
+            if (pile is IEnumerable pileEnum)
+                return pileEnum.Cast<object?>().ToList();
         }
         catch { }
         return null;
@@ -245,10 +254,9 @@ public static class GameStateExtractor
                 var val = GetPropValue(pile, propName);
                 if (val is int i) return i;
             }
-            // fallback: try Cards property
-            foreach (var propName in new[] { "Cards", "AllCards" })
+            foreach (var cardsPropName in new[] { "Cards", "AllCards" })
             {
-                var cards = GetPropValue(pile, propName) as System.Collections.IEnumerable;
+                var cards = GetPropValue(pile, cardsPropName) as IEnumerable;
                 if (cards != null) return cards.Cast<object>().Count();
             }
         }
@@ -263,38 +271,68 @@ public static class GameStateExtractor
         if (obj == null) return "null";
         try
         {
-            // 尝试 ModelId, CardModelId, ModelName, Name
-            foreach (var prop in new[] { "ModelId", "CardModelId", "ModelName", "Name", "Id" })
+            foreach (var prop in new[] { "ModelId", "CardModelId", "ModelName", "Name", "Id", "CardId" })
             {
                 var val = GetPropValue(obj, prop);
-                if (val != null) return val.ToString() ?? obj.GetType().Name;
+                if (val != null)
+                {
+                    var s = val.ToString();
+                    if (!string.IsNullOrWhiteSpace(s) && s != obj.GetType().Name)
+                        return s;
+                }
             }
         }
         catch { }
         return obj.GetType().Name;
     }
 
+    /// <summary>
+    /// 反射获取属性值。首次对某个类型取属性失败时，打印该类型的全部 public 属性名（调试诊断）。
+    /// </summary>
     private static object? GetPropValue(object? obj, string propName)
     {
         if (obj == null) return null;
+        var type = obj.GetType();
         try
         {
-            var prop = obj.GetType().GetProperty(propName,
+            var prop = type.GetProperty(propName,
                 BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
             if (prop != null)
                 return prop.GetValue(obj);
 
-            // 尝试字段
-            var field = obj.GetType().GetField(propName,
+            var field = type.GetField(propName,
                 BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
             if (field != null)
                 return field.GetValue(obj);
 
+            // 没找到 —— 诊断输出（每种类型只输出一次）
+            DiagnoseType(type, propName);
             return null;
         }
         catch
         {
             return null;
         }
+    }
+
+    private static void DiagnoseType(Type type, string missingProp)
+    {
+        var key = $"{type.FullName}:{missingProp}";
+        if (!Diagnosed.TryAdd(key, true)) return; // 已经输出过了
+
+        var props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+            .Select(p => p.Name)
+            .OrderBy(n => n)
+            .ToList();
+
+        var fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy)
+            .Select(f => f.Name)
+            .OrderBy(n => n)
+            .ToList();
+
+        Entry.Logger.Info(
+            $"[DIAG] Type={type.FullName} missing='{missingProp}' | " +
+            $"Properties=[{string.Join(", ", props)}] | " +
+            $"Fields=[{string.Join(", ", fields)}]");
     }
 }
